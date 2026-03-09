@@ -1,5 +1,5 @@
 //@version=5
-indicator("JessieOBS / Evil MACD Style (Custom, Open) v5", shorttitle="JOBS Evil MACD", overlay=false, max_lines_count=500, max_labels_count=500)
+indicator("MACD_Sss_forEq v13", shorttitle="MACD_Sss_forEq", overlay=false, max_lines_count=500, max_labels_count=500)
 
 // ============================================================================
 // 1) Core MACD inputs
@@ -20,11 +20,16 @@ showBgWarning   = input.bool(true, "Show subtle background warning", group="2. S
 // ============================================================================
 // 3) Histogram divergence detection inputs
 // ============================================================================
-leftBars    = input.int(5, "Left Bars", minval=1, group="3. Histogram Divergence")
-rightBars   = input.int(5, "Right Bars", minval=1, group="3. Histogram Divergence")
-minDivDist  = input.int(8, "Min Divergence Distance (bars)", minval=1, group="3. Histogram Divergence")
-showBullDiv = input.bool(true, "Show Bullish Divergence", group="3. Histogram Divergence")
-showBearDiv = input.bool(true, "Show Bearish Divergence", group="3. Histogram Divergence")
+leftBars      = input.int(5, "Left Bars", minval=1, group="3. Histogram Divergence")
+rightBars     = input.int(5, "Right Bars", minval=1, group="3. Histogram Divergence")
+minDivDist    = input.int(8, "Min Divergence Distance (bars)", minval=1, group="3. Histogram Divergence")
+showBullDiv   = input.bool(true, "Show Bullish Divergence", group="3. Histogram Divergence")
+showBearDiv   = input.bool(true, "Show Bearish Divergence", group="3. Histogram Divergence")
+
+// 连续高亮段：基础参数（不同周期会再做微调）
+divPreBars    = input.int(3, "Divergence Highlight Pre-Bars", minval=0, maxval=8, group="3. Histogram Divergence")
+divPostBars   = input.int(5, "Divergence Highlight Post-Bars", minval=1, maxval=12, group="3. Histogram Divergence")
+divLineWidth  = input.int(5, "Divergence Highlight Width", minval=2, maxval=10, group="3. Histogram Divergence")
 
 // ============================================================================
 // MACD calculations
@@ -37,21 +42,42 @@ hist        = macdLine - signalLine
 
 // ============================================================================
 // Dynamic warning logic on signal line (statistical zone)
-// We use a smoothed signal and rolling z-score to avoid fixed static thresholds.
 // ============================================================================
 sigSmoothed = ta.ema(signalLine, warnSmoothing)
 sigMean     = ta.sma(sigSmoothed, warnLookback)
 sigStd      = ta.stdev(sigSmoothed, warnLookback)
 zScore      = sigStd != 0.0 ? (sigSmoothed - sigMean) / sigStd : 0.0
 
-overboughtWarning = zScore > warnSensitivity   // Potential exhaustion at high extreme (short-bias warning)
-oversoldWarning   = zScore < -warnSensitivity  // Potential exhaustion at low extreme (long-bias warning)
+overboughtWarning = zScore > warnSensitivity
+oversoldWarning   = zScore < -warnSensitivity
 
 // ============================================================================
-// Divergence detection using confirmed price pivots and histogram values
-// - Bullish divergence: price makes lower low, histogram makes higher low
-// - Bearish divergence: price makes higher high, histogram makes lower high
-// Designed to reduce repaint by relying on pivot confirmation (rightBars)
+// Timeframe-specific tuning
+// 15m: 稍微放慢一点
+// 1h : 更早预警
+// 4h : 更稳、更宽，但这版比之前收紧一档
+// ============================================================================
+is15m = timeframe.period == "15"
+is1h  = timeframe.period == "60"
+is4h  = timeframe.period == "240"
+
+// 15m 略慢；1h 略早；4h 更稳
+effectiveMinDivDist = is15m ? minDivDist + 1 : is1h ? math.max(4, minDivDist - 3) : is4h ? math.max(10, minDivDist + 2) : minDivDist
+
+// 价格容差：1h 保持；4h 收紧一档
+highTolerance = is1h ? 0.998 : is4h ? 0.997 : 1.0
+lowTolerance  = is1h ? 1.002 : is4h ? 1.003 : 1.0
+
+// histogram 衰减/抬升阈值：1h 更激进；4h 比之前更稳
+histWeakRatio = is1h ? 0.95 : is4h ? 0.98 : 1.0
+histLiftRatio = is1h ? 1.05 : is4h ? 1.02 : 1.0
+
+// 染色长度：15m 稍微缩一点提前量；4h 拉长一点
+preBars  = is15m ? math.max(1, divPreBars - 1) : is4h ? divPreBars + 1 : divPreBars
+postBars = is4h ? divPostBars + 1 : divPostBars
+
+// ============================================================================
+// Divergence detection using confirmed pivots (histogram-only)
 // ============================================================================
 pl = ta.pivotlow(low, leftBars, rightBars)
 ph = ta.pivothigh(high, leftBars, rightBars)
@@ -72,12 +98,16 @@ if not na(pl)
     currLowHist  = hist[rightBars]
     currLowIndex = bar_index - rightBars
 
-    enoughDist   = na(prevLowIndex) ? false : (currLowIndex - prevLowIndex >= minDivDist)
-    bullDiv      := showBullDiv and enoughDist and currLowPrice < prevLowPrice and currLowHist > prevLowHist
+    enoughDist = na(prevLowIndex) ? false : (currLowIndex - prevLowIndex >= effectiveMinDivDist)
 
-    if bullDiv
-        line.new(prevLowIndex, prevLowHist, currLowIndex, currLowHist, xloc=xloc.bar_index, color=color.new(color.lime, 0), width=2)
-        label.new(currLowIndex, currLowHist, "Histogram Bullish Divergence\n(Early Warning)", style=label.style_label_up, textcolor=color.white, color=color.new(color.lime, 0), size=size.tiny)
+    // 基础经典逻辑
+    classicBull = currLowPrice < prevLowPrice and currLowHist > prevLowHist
+
+    // 1h / 4h 预警增强
+    earlyBullHTF = (currLowPrice <= prevLowPrice * lowTolerance and currLowHist > prevLowHist) or
+                   (currLowHist > prevLowHist * histLiftRatio)
+
+    bullDiv := showBullDiv and enoughDist and ((is1h or is4h) ? earlyBullHTF : classicBull)
 
     prevLowPrice := currLowPrice
     prevLowHist  := currLowHist
@@ -88,12 +118,16 @@ if not na(ph)
     currHighHist  = hist[rightBars]
     currHighIndex = bar_index - rightBars
 
-    enoughDistH   = na(prevHighIndex) ? false : (currHighIndex - prevHighIndex >= minDivDist)
-    bearDiv       := showBearDiv and enoughDistH and currHighPrice > prevHighPrice and currHighHist < prevHighHist
+    enoughDistH = na(prevHighIndex) ? false : (currHighIndex - prevHighIndex >= effectiveMinDivDist)
 
-    if bearDiv
-        line.new(prevHighIndex, prevHighHist, currHighIndex, currHighHist, xloc=xloc.bar_index, color=color.new(color.red, 0), width=2)
-        label.new(currHighIndex, currHighHist, "Histogram Bearish Divergence\n(Early Warning)", style=label.style_label_down, textcolor=color.white, color=color.new(color.red, 0), size=size.tiny)
+    // 基础经典逻辑
+    classicBear = currHighPrice >= prevHighPrice and currHighHist < prevHighHist
+
+    // 1h / 4h 预警增强
+    earlyBearHTF = (currHighPrice >= prevHighPrice * highTolerance and currHighHist < prevHighHist) or
+                   (currHighHist < prevHighHist * histWeakRatio)
+
+    bearDiv := showBearDiv and enoughDistH and ((is1h or is4h) ? earlyBearHTF : classicBear)
 
     prevHighPrice := currHighPrice
     prevHighHist  := currHighHist
@@ -102,40 +136,81 @@ if not na(ph)
 // ============================================================================
 // Visuals
 // ============================================================================
-// Histogram two-tone style with momentum emphasis
 histUpStrong   = hist >= 0 and hist > hist[1]
 histUpWeak     = hist >= 0 and hist <= hist[1]
 histDownStrong = hist < 0 and hist < hist[1]
-histDownWeak   = hist < 0 and hist >= hist[1]
 
-histColor = histUpStrong   ? color.new(#00E5FF, 0) :
-            histUpWeak     ? color.new(#4DD0E1, 25) :
-            histDownStrong ? color.new(#FF4D6D, 0) :
-                             color.new(#FF8FA3, 25)
+histColor = color.new(#B07A28, 10)
+if histUpStrong
+    histColor := color.new(#2CA84A, 0)
+else if histUpWeak
+    histColor := color.new(#2E55B8, 10)
+else if histDownStrong
+    histColor := color.new(#FF3B5F, 0)
 
 plot(hist, "Histogram", style=plot.style_columns, color=histColor, linewidth=2)
+plot(signalLine, "Signal Line", color=color.new(color.white, 25), linewidth=2)
+plot(macdLine, "MACD Line", color=color.new(#F57C00, 0), linewidth=2)
+hline(0, "Zero", color=color.new(color.gray, 75))
 
-// Regular signal line
-plot(signalLine, "Signal Line", color=color.new(color.white, 0), linewidth=2)
-
-// Highlight thick warning segment on top of signal line
-plot(overboughtWarning ? signalLine : na, "Overbought Warning (Signal)", color=color.new(#1E88E5, 0), linewidth=5)
-plot(oversoldWarning ? signalLine : na, "Oversold Warning (Signal)", color=color.new(#EC407A, 0), linewidth=5)
-
-// MACD line and zero reference
-plot(macdLine, "MACD Line", color=color.new(color.orange, 0), linewidth=2)
-hline(0, "Zero", color=color.new(color.gray, 70))
-
-// Optional subtle background warning (avoid over-clutter)
-bgColor = overboughtWarning ? color.new(#1E88E5, 92) : oversoldWarning ? color.new(#EC407A, 92) : na
+// 只保留轻背景，不额外画 OB/OS 线和圆点
+bgColor = overboughtWarning ? color.new(#1E88E5, 94) : oversoldWarning ? color.new(#EC407A, 94) : na
 bgcolor(showBgWarning ? bgColor : na)
 
-// Optional warning markers in panel
-plotshape(overboughtWarning and not overboughtWarning[1], title="Overbought Warning Start", style=shape.triangledown, location=location.top, color=color.new(#1E88E5, 0), text="OB Warn", textcolor=color.white, size=size.tiny)
-plotshape(oversoldWarning and not oversoldWarning[1], title="Oversold Warning Start", style=shape.triangleup, location=location.bottom, color=color.new(#EC407A, 0), text="OS Warn", textcolor=color.white, size=size.tiny)
+// ============================================================================
+// Continuous divergence tint drawn directly on MACD line
+// ============================================================================
+bullDivColor = color.new(#00BCD4, 0)   // 青蓝
+bearDivColor = color.new(#C86DD7, 0)   // 紫粉
+
+var line[] divLines = array.new_line()
+
+f_push_line(_ln) =>
+    array.push(divLines, _ln)
+    if array.size(divLines) > 420
+        old = array.shift(divLines)
+        line.delete(old)
+
+if bullDiv and bar_index > rightBars + preBars + 1
+    startOff = rightBars + preBars
+    usablePost = math.min(postBars, rightBars)
+    endOff = rightBars - usablePost
+    if startOff > endOff
+        i = startOff
+        while i > endOff
+            ln = line.new(
+                 x1 = bar_index - i,
+                 y1 = macdLine[i],
+                 x2 = bar_index - (i - 1),
+                 y2 = macdLine[i - 1],
+                 xloc = xloc.bar_index,
+                 extend = extend.none,
+                 color = bullDivColor,
+                 width = divLineWidth)
+            f_push_line(ln)
+            i := i - 1
+
+if bearDiv and bar_index > rightBars + preBars + 1
+    startOff = rightBars + preBars
+    usablePost = math.min(postBars, rightBars)
+    endOff = rightBars - usablePost
+    if startOff > endOff
+        i = startOff
+        while i > endOff
+            ln = line.new(
+                 x1 = bar_index - i,
+                 y1 = macdLine[i],
+                 x2 = bar_index - (i - 1),
+                 y2 = macdLine[i - 1],
+                 xloc = xloc.bar_index,
+                 extend = extend.none,
+                 color = bearDivColor,
+                 width = divLineWidth)
+            f_push_line(ln)
+            i := i - 1
 
 // ============================================================================
-// Alerts: warning-oriented (not strategy entries)
+// Alerts
 // ============================================================================
 alertcondition(overboughtWarning, title="Overbought Warning", message="Signal line is in a dynamic overbought warning zone (early warning).")
 alertcondition(oversoldWarning, title="Oversold Warning", message="Signal line is in a dynamic oversold warning zone (early warning).")
