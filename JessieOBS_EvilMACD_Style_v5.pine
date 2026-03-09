@@ -1,0 +1,143 @@
+//@version=5
+indicator("JessieOBS / Evil MACD Style (Custom, Open) v5", shorttitle="JOBS Evil MACD", overlay=false, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// 1) Core MACD inputs
+// ============================================================================
+fastLen     = input.int(12, "Fast Length", minval=1, group="1. MACD")
+slowLen     = input.int(26, "Slow Length", minval=1, group="1. MACD")
+signalLen   = input.int(9, "Signal Smoothing", minval=1, group="1. MACD")
+src         = input.source(close, "Source", group="1. MACD")
+
+// ============================================================================
+// 2) Signal-line warning enhancement (dynamic OB/OS structure)
+// ============================================================================
+warnLookback    = input.int(100, "Lookback", minval=20, group="2. Signal Warning Zone")
+warnSensitivity = input.float(1.4, "Sensitivity (Z-score threshold)", minval=0.1, step=0.1, group="2. Signal Warning Zone")
+warnSmoothing   = input.int(5, "Signal Smoothing (for warning)", minval=1, group="2. Signal Warning Zone")
+showBgWarning   = input.bool(true, "Show subtle background warning", group="2. Signal Warning Zone")
+
+// ============================================================================
+// 3) Histogram divergence detection inputs
+// ============================================================================
+leftBars    = input.int(5, "Left Bars", minval=1, group="3. Histogram Divergence")
+rightBars   = input.int(5, "Right Bars", minval=1, group="3. Histogram Divergence")
+minDivDist  = input.int(8, "Min Divergence Distance (bars)", minval=1, group="3. Histogram Divergence")
+showBullDiv = input.bool(true, "Show Bullish Divergence", group="3. Histogram Divergence")
+showBearDiv = input.bool(true, "Show Bearish Divergence", group="3. Histogram Divergence")
+
+// ============================================================================
+// MACD calculations
+// ============================================================================
+fastMA      = ta.ema(src, fastLen)
+slowMA      = ta.ema(src, slowLen)
+macdLine    = fastMA - slowMA
+signalLine  = ta.ema(macdLine, signalLen)
+hist        = macdLine - signalLine
+
+// ============================================================================
+// Dynamic warning logic on signal line (statistical zone)
+// We use a smoothed signal and rolling z-score to avoid fixed static thresholds.
+// ============================================================================
+sigSmoothed = ta.ema(signalLine, warnSmoothing)
+sigMean     = ta.sma(sigSmoothed, warnLookback)
+sigStd      = ta.stdev(sigSmoothed, warnLookback)
+zScore      = sigStd != 0.0 ? (sigSmoothed - sigMean) / sigStd : 0.0
+
+overboughtWarning = zScore > warnSensitivity   // Potential exhaustion at high extreme (short-bias warning)
+oversoldWarning   = zScore < -warnSensitivity  // Potential exhaustion at low extreme (long-bias warning)
+
+// ============================================================================
+// Divergence detection using confirmed price pivots and histogram values
+// - Bullish divergence: price makes lower low, histogram makes higher low
+// - Bearish divergence: price makes higher high, histogram makes lower high
+// Designed to reduce repaint by relying on pivot confirmation (rightBars)
+// ============================================================================
+pl = ta.pivotlow(low, leftBars, rightBars)
+ph = ta.pivothigh(high, leftBars, rightBars)
+
+var float prevLowPrice   = na
+var float prevLowHist    = na
+var int   prevLowIndex   = na
+
+var float prevHighPrice  = na
+var float prevHighHist   = na
+var int   prevHighIndex  = na
+
+bullDiv = false
+bearDiv = false
+
+if not na(pl)
+    currLowPrice = low[rightBars]
+    currLowHist  = hist[rightBars]
+    currLowIndex = bar_index - rightBars
+
+    enoughDist   = na(prevLowIndex) ? false : (currLowIndex - prevLowIndex >= minDivDist)
+    bullDiv      := showBullDiv and enoughDist and currLowPrice < prevLowPrice and currLowHist > prevLowHist
+
+    if bullDiv
+        line.new(prevLowIndex, prevLowHist, currLowIndex, currLowHist, xloc=xloc.bar_index, color=color.new(color.lime, 0), width=2)
+        label.new(currLowIndex, currLowHist, "Histogram Bullish Divergence\n(Early Warning)", style=label.style_label_up, textcolor=color.white, color=color.new(color.lime, 0), size=size.tiny)
+
+    prevLowPrice := currLowPrice
+    prevLowHist  := currLowHist
+    prevLowIndex := currLowIndex
+
+if not na(ph)
+    currHighPrice = high[rightBars]
+    currHighHist  = hist[rightBars]
+    currHighIndex = bar_index - rightBars
+
+    enoughDistH   = na(prevHighIndex) ? false : (currHighIndex - prevHighIndex >= minDivDist)
+    bearDiv       := showBearDiv and enoughDistH and currHighPrice > prevHighPrice and currHighHist < prevHighHist
+
+    if bearDiv
+        line.new(prevHighIndex, prevHighHist, currHighIndex, currHighHist, xloc=xloc.bar_index, color=color.new(color.red, 0), width=2)
+        label.new(currHighIndex, currHighHist, "Histogram Bearish Divergence\n(Early Warning)", style=label.style_label_down, textcolor=color.white, color=color.new(color.red, 0), size=size.tiny)
+
+    prevHighPrice := currHighPrice
+    prevHighHist  := currHighHist
+    prevHighIndex := currHighIndex
+
+// ============================================================================
+// Visuals
+// ============================================================================
+// Histogram two-tone style with momentum emphasis
+histUpStrong   = hist >= 0 and hist > hist[1]
+histUpWeak     = hist >= 0 and hist <= hist[1]
+histDownStrong = hist < 0 and hist < hist[1]
+histDownWeak   = hist < 0 and hist >= hist[1]
+
+histColor = histUpStrong   ? color.new(#00E5FF, 0) :
+            histUpWeak     ? color.new(#4DD0E1, 25) :
+            histDownStrong ? color.new(#FF4D6D, 0) :
+                             color.new(#FF8FA3, 25)
+
+plot(hist, "Histogram", style=plot.style_columns, color=histColor, linewidth=2)
+
+// Regular signal line
+plot(signalLine, "Signal Line", color=color.new(color.white, 0), linewidth=2)
+
+// Highlight thick warning segment on top of signal line
+plot(overboughtWarning ? signalLine : na, "Overbought Warning (Signal)", color=color.new(#1E88E5, 0), linewidth=5)
+plot(oversoldWarning ? signalLine : na, "Oversold Warning (Signal)", color=color.new(#EC407A, 0), linewidth=5)
+
+// MACD line and zero reference
+plot(macdLine, "MACD Line", color=color.new(color.orange, 0), linewidth=2)
+hline(0, "Zero", color=color.new(color.gray, 70))
+
+// Optional subtle background warning (avoid over-clutter)
+bgColor = overboughtWarning ? color.new(#1E88E5, 92) : oversoldWarning ? color.new(#EC407A, 92) : na
+bgcolor(showBgWarning ? bgColor : na)
+
+// Optional warning markers in panel
+plotshape(overboughtWarning and not overboughtWarning[1], title="Overbought Warning Start", style=shape.triangledown, location=location.top, color=color.new(#1E88E5, 0), text="OB Warn", textcolor=color.white, size=size.tiny)
+plotshape(oversoldWarning and not oversoldWarning[1], title="Oversold Warning Start", style=shape.triangleup, location=location.bottom, color=color.new(#EC407A, 0), text="OS Warn", textcolor=color.white, size=size.tiny)
+
+// ============================================================================
+// Alerts: warning-oriented (not strategy entries)
+// ============================================================================
+alertcondition(overboughtWarning, title="Overbought Warning", message="Signal line is in a dynamic overbought warning zone (early warning).")
+alertcondition(oversoldWarning, title="Oversold Warning", message="Signal line is in a dynamic oversold warning zone (early warning).")
+alertcondition(bullDiv, title="Bullish Histogram Divergence", message="Bullish MACD histogram divergence detected (early warning).")
+alertcondition(bearDiv, title="Bearish Histogram Divergence", message="Bearish MACD histogram divergence detected (early warning).")
