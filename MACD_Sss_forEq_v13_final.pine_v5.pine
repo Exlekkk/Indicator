@@ -9,6 +9,9 @@ slowLen     = input.int(26, "Slow Length", minval=1, group="1. MACD")
 signalLen   = input.int(9, "Signal Smoothing", minval=1, group="1. MACD")
 src         = input.source(close, "Source", group="1. MACD")
 
+// 金叉/死叉
+showCrossDots = input.bool(true, "Show Golden/Dead Cross Dots", group="1. MACD")
+
 // ============================================================================
 // 2) Signal-line warning enhancement (dynamic OB/OS structure)
 // ============================================================================
@@ -152,6 +155,27 @@ plot(hist, "Histogram", style=plot.style_columns, color=histColor, linewidth=2)
 plot(signalLine, "Signal Line", color=color.new(color.white, 25), linewidth=2)
 plot(macdLine, "MACD Line", color=color.new(#F57C00, 0), linewidth=2)
 hline(0, "Zero", color=color.new(color.gray, 75))
+
+// 金叉/死叉圆点标记（参考图2风格）
+goldenCross = ta.crossover(macdLine, signalLine)
+deadCross   = ta.crossunder(macdLine, signalLine)
+
+crossPrice = (macdLine + signalLine) / 2.0
+
+var label[] crossDotLabels = array.new_label()
+f_push_cross_label(_lb) =>
+    array.push(crossDotLabels, _lb)
+    if array.size(crossDotLabels) > 420
+        oldLb = array.shift(crossDotLabels)
+        label.delete(oldLb)
+
+if showCrossDots and goldenCross
+    lb = label.new(bar_index, crossPrice, "", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_circle, size=size.tiny, color=color.new(color.lime, 0), textcolor=color.new(color.lime, 0))
+    f_push_cross_label(lb)
+
+if showCrossDots and deadCross
+    lb = label.new(bar_index, crossPrice, "", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_circle, size=size.tiny, color=color.new(color.red, 0), textcolor=color.new(color.red, 0))
+    f_push_cross_label(lb)
 
 // 只保留轻背景，不额外画 OB/OS 线和圆点
 bgColor = overboughtWarning ? color.new(#1E88E5, 94) : oversoldWarning ? color.new(#EC407A, 94) : na
