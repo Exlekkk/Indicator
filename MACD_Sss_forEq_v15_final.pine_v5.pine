@@ -1,5 +1,5 @@
 //@version=5
-indicator("MACD_Sss_forEq v13", shorttitle="MACD_Sss_forEq", overlay=false, max_lines_count=500, max_labels_count=500)
+indicator("MACD_Sss_forEq v15", shorttitle="MACD_Sss_forEq", overlay=false, max_labels_count=500)
 
 // ============================================================================
 // 1) Core MACD inputs
@@ -11,6 +11,7 @@ src         = input.source(close, "Source", group="1. MACD")
 
 // 金叉/死叉
 showCrossDots = input.bool(true, "Show Golden/Dead Cross Dots", group="1. MACD")
+crossDotWidth = input.int(4, "Cross Dot Size", minval=1, maxval=4, group="1. MACD")
 
 // ============================================================================
 // 2) Signal-line warning enhancement (dynamic OB/OS structure)
@@ -33,6 +34,9 @@ showBearDiv   = input.bool(true, "Show Bearish Divergence", group="3. Histogram 
 divPreBars    = input.int(3, "Divergence Highlight Pre-Bars", minval=0, maxval=8, group="3. Histogram Divergence")
 divPostBars   = input.int(5, "Divergence Highlight Post-Bars", minval=1, maxval=12, group="3. Histogram Divergence")
 divLineWidth  = input.int(5, "Divergence Highlight Width", minval=2, maxval=10, group="3. Histogram Divergence")
+// 背离高亮不再压在 MACD 线上，而是画在 MACD 线旁边，避免遮挡金叉/死叉圆点。
+// 数值越大，高亮线离 MACD 线越远。
+divOffsetPct  = input.float(3.0, "Divergence Highlight Offset (%)", minval=0.0, maxval=20.0, step=0.5, group="3. Histogram Divergence")
 
 // ============================================================================
 // MACD calculations
@@ -156,87 +160,55 @@ plot(signalLine, "Signal Line", color=color.new(color.white, 25), linewidth=2)
 plot(macdLine, "MACD Line", color=color.new(#F57C00, 0), linewidth=2)
 hline(0, "Zero", color=color.new(color.gray, 75))
 
-// 金叉/死叉圆点标记（参考图2风格）
+// 金叉/死叉小圆点标记
+// 说明：圆点用 plot.style_circles 直接画在 MACD 线上，不再用 label/text，避免视觉上脱离线体。
+// Cross Dot Size 控制圆点线宽；默认 4。
 goldenCross = ta.crossover(macdLine, signalLine)
 deadCross   = ta.crossunder(macdLine, signalLine)
 
- codex/add-green-and-red-markers-for-crossovers-af6j1b
-crossPrice = (macdLine + signalLine) / 2.0
-
-var label[] crossDotLabels = array.new_label()
-f_push_cross_label(_lb) =>
-    array.push(crossDotLabels, _lb)
-    if array.size(crossDotLabels) > 420
-        oldLb = array.shift(crossDotLabels)
-        label.delete(oldLb)
-
-if showCrossDots and goldenCross
-    lb = label.new(bar_index, crossPrice, "", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_circle, size=size.tiny, color=color.new(color.lime, 0), textcolor=color.new(color.lime, 0))
-    f_push_cross_label(lb)
-
-if showCrossDots and deadCross
-    lb = label.new(bar_index, crossPrice, "", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_circle, size=size.tiny, color=color.new(color.red, 0), textcolor=color.new(color.red, 0))
-    f_push_cross_label(lb)
-
-plotshape(showCrossDots and goldenCross ? macdLine : na, title="Golden Cross Dot", style=shape.circle, location=location.absolute, size=size.tiny, color=color.new(color.lime, 0))
-plotshape(showCrossDots and deadCross ? macdLine : na, title="Dead Cross Dot", style=shape.circle, location=location.absolute, size=size.tiny, color=color.new(color.red, 0))
- main
+crossPrice = macdLine
 
 // 只保留轻背景，不额外画 OB/OS 线和圆点
 bgColor = overboughtWarning ? color.new(#1E88E5, 94) : oversoldWarning ? color.new(#EC407A, 94) : na
 bgcolor(showBgWarning ? bgColor : na)
 
 // ============================================================================
-// Continuous divergence tint drawn directly on MACD line
+// Detached divergence highlight rail
 // ============================================================================
+// 说明：背离高亮线不再直接覆盖 MACD Line。
+// 牛背离高亮画在 MACD 线下方；熊背离高亮画在 MACD 线上方。
+// 这样金叉/死叉圆点仍然可以直接贴在 MACD Line 上，不会被背离线遮挡。
 bullDivColor = color.new(#00BCD4, 0)   // 青蓝
 bearDivColor = color.new(#C86DD7, 0)   // 紫粉
 
-var line[] divLines = array.new_line()
+divOffsetRange = ta.highest(macdLine, 200) - ta.lowest(macdLine, 200)
+divOffsetBase  = na(divOffsetRange) or divOffsetRange == 0.0 ? ta.stdev(macdLine, 100) : divOffsetRange
+divOffset      = nz(divOffsetBase, 0.0) * divOffsetPct / 100.0
 
-f_push_line(_ln) =>
-    array.push(divLines, _ln)
-    if array.size(divLines) > 420
-        old = array.shift(divLines)
-        line.delete(old)
+// 样式页可调版背离线：用 plot 输出，而不是 line.new 图形对象。
+// 这样 Bull/Bear Divergence Line 会出现在“样式”页，并带有和 Cross Dot 类似的形态选择入口。
+// 说明：为了让背离段回填到 pivot 附近，使用 offset 将确认后的片段左移。
+bullDivSince = ta.barssince(bullDiv)
+bearDivSince = ta.barssince(bearDiv)
 
-if bullDiv and bar_index > rightBars + preBars + 1
-    startOff = rightBars + preBars
-    usablePost = math.min(postBars, rightBars)
-    endOff = rightBars - usablePost
-    if startOff > endOff
-        i = startOff
-        while i > endOff
-            ln = line.new(
-                 x1 = bar_index - i,
-                 y1 = macdLine[i],
-                 x2 = bar_index - (i - 1),
-                 y2 = macdLine[i - 1],
-                 xloc = xloc.bar_index,
-                 extend = extend.none,
-                 color = bullDivColor,
-                 width = divLineWidth)
-            f_push_line(ln)
-            i := i - 1
+bullDivActive = not na(bullDivSince) and bullDivSince <= (divPreBars + divPostBars)
+bearDivActive = not na(bearDivSince) and bearDivSince <= (divPreBars + divPostBars)
 
-if bearDiv and bar_index > rightBars + preBars + 1
-    startOff = rightBars + preBars
-    usablePost = math.min(postBars, rightBars)
-    endOff = rightBars - usablePost
-    if startOff > endOff
-        i = startOff
-        while i > endOff
-            ln = line.new(
-                 x1 = bar_index - i,
-                 y1 = macdLine[i],
-                 x2 = bar_index - (i - 1),
-                 y2 = macdLine[i - 1],
-                 xloc = xloc.bar_index,
-                 extend = extend.none,
-                 color = bearDivColor,
-                 width = divLineWidth)
-            f_push_line(ln)
-            i := i - 1
+divPlotOffset = -(rightBars + divPreBars)
+divPlotLookback = rightBars + divPreBars
+
+bullDivPlot = bullDivActive and bar_index > divPlotLookback ? macdLine[divPlotLookback] - divOffset[divPlotLookback] : na
+bearDivPlot = bearDivActive and bar_index > divPlotLookback ? macdLine[divPlotLookback] + divOffset[divPlotLookback] : na
+
+plot(bullDivPlot, title="Bull Divergence Line", color=bullDivColor, linewidth=divLineWidth, style=plot.style_linebr, offset=divPlotOffset)
+plot(bearDivPlot, title="Bear Divergence Line", color=bearDivColor, linewidth=divLineWidth, style=plot.style_linebr, offset=divPlotOffset)
+
+
+// ============================================================================
+// Cross dots attached directly to MACD line
+// ============================================================================
+plot(showCrossDots and goldenCross ? crossPrice : na, title="Golden Cross Dot", style=plot.style_circles, linewidth=crossDotWidth, color=color.new(color.lime, 0))
+plot(showCrossDots and deadCross ? crossPrice : na, title="Dead Cross Dot", style=plot.style_circles, linewidth=crossDotWidth, color=color.new(color.red, 0))
 
 // ============================================================================
 // Alerts
