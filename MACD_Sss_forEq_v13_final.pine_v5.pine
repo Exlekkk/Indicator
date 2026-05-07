@@ -160,6 +160,7 @@ hline(0, "Zero", color=color.new(color.gray, 75))
 goldenCross = ta.crossover(macdLine, signalLine)
 deadCross   = ta.crossunder(macdLine, signalLine)
 
+ codex/add-green-and-red-markers-for-crossovers-af6j1b
 crossPrice = (macdLine + signalLine) / 2.0
 
 var label[] crossDotLabels = array.new_label()
@@ -176,6 +177,10 @@ if showCrossDots and goldenCross
 if showCrossDots and deadCross
     lb = label.new(bar_index, crossPrice, "", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_circle, size=size.tiny, color=color.new(color.red, 0), textcolor=color.new(color.red, 0))
     f_push_cross_label(lb)
+
+plotshape(showCrossDots and goldenCross ? macdLine : na, title="Golden Cross Dot", style=shape.circle, location=location.absolute, size=size.tiny, color=color.new(color.lime, 0))
+plotshape(showCrossDots and deadCross ? macdLine : na, title="Dead Cross Dot", style=shape.circle, location=location.absolute, size=size.tiny, color=color.new(color.red, 0))
+ main
 
 // 只保留轻背景，不额外画 OB/OS 线和圆点
 bgColor = overboughtWarning ? color.new(#1E88E5, 94) : oversoldWarning ? color.new(#EC407A, 94) : na
